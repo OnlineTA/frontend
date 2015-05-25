@@ -19,7 +19,7 @@ var request_ch chan string
 var subscribe_ch chan subscription
 var delete_ch chan string
 var result_ch chan error
-var incoming_ch chan Assessment
+var incoming_ch essment
 
 type Receiver int
 
@@ -61,8 +61,8 @@ func (a *Assessments) Serve() {
         // Issue a new request for receiving an assessment
         _ = req
       case in := <- incoming_ch:
-        // If the id of the incoming assessment belongs to a subscribed
-        // assignment, forward that assessment to the subscribed assignment
+        // If the id of the incoming submission belongs to a subscribed
+        // submission, forward that assessment to the subscribed submission
         // Otherwise, simply throw it away
         if ch, ok := a.subscriptions[in.id]; ok  {
           ch <- in.assess
@@ -99,9 +99,9 @@ func store_if_not_exists(id string, ch chan string) error {
   return nil
 }
 
-// Called by an assignment to subscribe to an assessment
+// Called by a submission to subscribe to an assessment
 // When the assessment is ready, it will be sent over the
-// channel returned from this function
+// channel returned by this function
 func Subscribe(id string) (<- chan string, bool) {
   proxy_ch := make(chan string)
   ch := make(chan string)
