@@ -6,9 +6,12 @@ import (
   "os"
   "io"
   "log"
+  "path"
+  //"mime/multipart"
   "github.com/gorilla/mux"
   //"gopkg.in/yaml.v2"
   "code.google.com/p/go-uuid/uuid"
+  "github.com/onlineta/common"
 )
 
 var templates = template.Must(template.ParseGlob("templates/*.html"))
@@ -17,31 +20,10 @@ var base_dir = "/tmp/onlineta/"
 var submission_subdir = "submissions/"
 var submit_dir_full = base_dir + submission_subdir
 
+var gconfig *common.Config
+
 func fail500(w http.ResponseWriter, err error) {
   http.Error(w, err.Error(), http.StatusInternalServerError)
-}
-
-func handler(w http.ResponseWriter, r *http.Request) {
-  switch r.Method {
-  case "GET":
-    log.Print("foo");
-  case "POST":
-
-    defer src.Close()
-    err = os.Mkdir("/tmp/onlineta", 0777)
-    if err != nil {
-      fail500(w, err)
-      log.Print(err)
-      return
-    }
-    f, err := os.Create("/tmp/onlineta/foo");
-    defer f.Close()
-
-    if _,err := io.Copy(f, src); err != nil {
-      fail500(w, err)
-      return
-    }
-  }
 }
 
 func show_index(w http.ResponseWriter, r *http.Request) {
@@ -58,67 +40,156 @@ func named_submit_handler(w http.ResponseWriter, r *http.Request) {
   templates.ExecuteTemplate(w, "upload.html", nil)
 }
 
-type Metadata struct {
-  Id string
-  Course string
-  Assignment string
-  User string
-}
 
 func receive_submission(w http.ResponseWriter, r *http.Request) {
   // Extract meta data from
 
   vars := mux.Vars(r)
 
-  unknown_file := false
+  //unknown_file := false
 
-  meta := Metadata{}
+  meta := common.Metadata{}
+  //meta := common.Metadata{} {
+  //  vars["course"].
+  //}
   meta.Course = vars["course"]
   meta.Assignment = vars["assignment"]
   meta.User = vars["anon"]
   meta.Id = uuid.New()
+  meta.Status = common.STATUS_ACCEPTED
 
-  err := r.ParseMultipartForm(524288)
-  //m := r.MultipartForm
+  if err := r.ParseMultipartForm(107374182-4); err != nil {
+    fail500(w,err)
+    log.Fatal(err)
+    return
+  }
 
-  if src, _, err := r.FormFile("src"); err != nil {
-      fail500(w, err)
-      log.Fatal(err)
-      return
+  //var file_header multipart.FileHeader
+  src, file_header, err := r.FormFile("src")
+  if err != nil {
+    fail500(w, err)
+    log.Fatal(err)
+    return
   }
 
   // Try to identify the kind of file that we're working with
-  fheader := io.LimitedReader(src, 512)
-  mime := http.DetectContentType(reader.Read())
-  log("Detected mimetype " + mime)
+  // TODO: Do something with thus info
+  reader := io.LimitReader(src, 512)
+  header := make([]byte, 512);
+  reader.Read(header)
+  mime := http.DetectContentType(header)
+  log.Print("Detected mimetype " + mime)
 
-  // Handle compressed archives
-  // TODO: Get list of accepted file formats from assignment specification
- / switch {
-  case mime == "application/x-gzip":
-    // Extract gzip and check resultint tar
-  case mime == "applicatin/zip":
-    // Extract zip file
-  default:
-    unknown_file = true
+  //data := struct {meta Metadata, error Error}
+
+  // Save file
+  dir := path.Join(common.ConfigValue("SubmissionDir"), meta.Id)
+  if err := os.Mkdir(dir, 0700); err != nil {
+    log.Fatal(err)
+    fail500(w, err)
+    return
   }
 
-  data := struct {meta Metadata, error Error}
+  f, err := os.Create(path.Join(dir, file_header.Filename))
+  if err != nil {
+    log.Fatal(err)
+    fail500(w, err)
+  }
+  defer f.Close()
+
+  src.Seek(0, 0)
+  if _,err := io.Copy(f, src); err != nil {
+    log.Fatal(err)
+    fail500(w, err)
+    return
+  }
+
+  // Save metadata
+  if err := meta.Commit(); err != nil {
+    log.Fatal(err)
+    return
+  }
+
+  // TODO: Cleanup saved file and return error to user if saving
+  // of metadata file fails for some reason
 
   templates.ExecuteTemplate(w, "success.html", meta)
 
   return
 }
 
-func init_env(){
-  if err := os.Mkdir(base_dir, 0700); !os.IsExist(err)  && err != nil {
-    panic("Failed ot create directory")
+func query_handler(w http.ResponseWriter, r *http.Request) {
+  vars := mux.Vars(r)
+
+  meta := common.Metadata{}
+  if err := meta.Get(vars["id"]); err != nil {
+    fail500(w, err)
+    log.Fatal(err)
+    return
   }
-  if err := os.Mkdir(submit_dir_full, 0700); !os.IsExist(err) && err != nil {
+
+  data := struct {
+    Id string
+    Status string
+    Assessment string
+  }{
+    meta.Id,
+    meta.Status.Description(),
+    "",
+  }
+
+  templates.ExecuteTemplate(w, "success.html", data)
+}
+
+func assessment_handler(w http.ResponseWriter, r* http.Request) {
+  vars := mux.Vars(r)
+
+  meta := common.Metadata{}
+  if err := meta.Get(vars["id"]); err != nil {
+    fail500(w, err)
+    log.Fatal(err)
+    return
+  }
+
+  // FIXME: Why do we need two calls to start assessment server
+  assessments := New()
+  assessments.Serve()
+
+  assess_ch, ok := Subscribe(meta.Id)
+  if !ok {
+    //fail500(w, "")
+    log.Fatal("")
+    return
+  }
+
+  assessment := <- assess_ch
+  if assessment == "" {
+    assessment = "Assessment retrieval timed out, Please try again"
+  }
+
+  templates.ExecuteTemplate(w, "submission.html", assessment)
+}
+
+func init_env(){
+  log.Print(gconfig.Default.Basedir)
+  if err := os.Mkdir(gconfig.Default.Basedir, 0700); !os.IsExist(err)  && err != nil {
+    panic("Failed ot create directory " + gconfig.Default.Basedir)
+  }
+  if err := os.Mkdir(gconfig.Default.SubmissionDir, 0700); !os.IsExist(err) && err != nil {
     panic("Failed to create directory")
   }
 }
+
 func main() {
+  gconfig = new(common.Config)
+  if err := gconfig.Parse("../onlineta.conf"); err != nil {
+    log.Fatal(err)
+    return
+  }
+  log.Print(gconfig.Default.Basedir)
+
+  // Make config lookups available through the ConfigCh channel
+  gconfig.Serve()
 
   init_env()
 
@@ -127,6 +198,8 @@ func main() {
   router.HandleFunc("/submit/{course}/{assignment}", anonymous_submit_handler).Methods("GET");
   router.HandleFunc("/submit/{course}/{assignment}", receive_submission).Methods("POST", "PUT");
   router.HandleFunc("/submit/{course}/{assignment}/{user}", named_submit_handler).Methods("POST", "PUT")
+  router.HandleFunc("/query/{id}", query_handler).Methods("GET")
+  router.HandleFunc("/assessment/{id}", query_handler).Methods("GET")
 
   http.Handle("/", router)
   http.ListenAndServe(":8080", nil)
