@@ -4,9 +4,11 @@ import (
   "net/http"
   "html/template"
   "os"
+  "os/user"
   "io"
   "log"
   "path"
+  "strconv"
   //"mime/multipart"
   "github.com/gorilla/mux"
   //"gopkg.in/yaml.v2"
@@ -42,8 +44,14 @@ func named_submit_handler(w http.ResponseWriter, r *http.Request) {
 
 
 func receive_submission(w http.ResponseWriter, r *http.Request) {
-  // Extract meta data from
+  // TODO: Add defer statement here calling a function for rolling
+  // back changes made in case this function returns prematurely
+  // Could be implemented by pushing each file operation performed
+  // to a call stack which is cleared upon successful exit and
+  // and upon premature exit the inverse of each of its containing
+  // executed
 
+  // Extract meta data from
   vars := mux.Vars(r)
 
   //unknown_file := false
@@ -54,13 +62,17 @@ func receive_submission(w http.ResponseWriter, r *http.Request) {
   //}
   meta.Course = vars["course"]
   meta.Assignment = vars["assignment"]
-  meta.User = vars["anon"]
+  if user := vars["user"]; user == "" {
+    // Assign anonymous username
+  } else {
+    meta.User = user
+  }
   meta.Id = uuid.New()
   meta.Status = common.STATUS_ACCEPTED
 
   if err := r.ParseMultipartForm(107374182-4); err != nil {
     fail500(w,err)
-    log.Fatal(err)
+    log.Print(err)
     return
   }
 
@@ -68,7 +80,7 @@ func receive_submission(w http.ResponseWriter, r *http.Request) {
   src, file_header, err := r.FormFile("src")
   if err != nil {
     fail500(w, err)
-    log.Fatal(err)
+    log.Print(err)
     return
   }
 
@@ -85,28 +97,57 @@ func receive_submission(w http.ResponseWriter, r *http.Request) {
   // Save file
   dir := path.Join(common.ConfigValue("SubmissionDir"), meta.Id)
   if err := os.Mkdir(dir, 0700); err != nil {
-    log.Fatal(err)
+    log.Print(err)
     fail500(w, err)
     return
   }
 
-  f, err := os.Create(path.Join(dir, file_header.Filename))
+  upload_name := path.Join(dir, file_header.Filename)
+  f, err := os.OpenFile(upload_name, os.O_CREATE|os.O_WRONLY, 0600)
   if err != nil {
-    log.Fatal(err)
+    log.Print(err)
     fail500(w, err)
+    return
   }
   defer f.Close()
 
   src.Seek(0, 0)
   if _,err := io.Copy(f, src); err != nil {
-    log.Fatal(err)
+    log.Print(err)
     fail500(w, err)
     return
   }
 
+  // FIXME: Race condition between file writing and file chowning
+  // could leave behind submissions owned by the onlineTA user
+
+  // Set owner if username is known
+  if meta.User != "" {
+    // Lookup user
+    user, err := user.Lookup(meta.User)
+    if err != nil {
+      log.Print(err)
+      fail500(w,err)
+      return
+    }
+    //TODO: handle error
+    uid, _ := strconv.Atoi(user.Uid)
+    if err := os.Chown(upload_name, uid, 65534); err != nil {
+      log.Print(err)
+      fail500(w,err)
+      return
+    }
+    // Set containing directory owner
+    if err := os.Chown(dir, uid, 65534); err != nil {
+      log.Print(err)
+      fail500(w,err)
+      return
+    }
+  }
+
   // Save metadata
   if err := meta.Commit(); err != nil {
-    log.Fatal(err)
+    log.Print(err)
     return
   }
 
@@ -124,7 +165,7 @@ func query_handler(w http.ResponseWriter, r *http.Request) {
   meta, err := common.Get(vars["id"])
   if err != nil {
     fail500(w, err)
-    log.Fatal(err)
+    log.Print(err)
     return
   }
 
@@ -148,7 +189,7 @@ func assessment_handler(w http.ResponseWriter, r* http.Request) {
   meta, err := common.Get(vars["id"])
   if err != nil {
     fail500(w, err)
-    log.Fatal(err)
+    log.Print(err)
     return
   }
 
@@ -159,7 +200,7 @@ func assessment_handler(w http.ResponseWriter, r* http.Request) {
   assess_ch, ok := Subscribe(meta.Id)
   if !ok {
     //fail500(w, "")
-    log.Fatal("")
+    log.Print("")
     return
   }
 
@@ -187,7 +228,7 @@ func init_env(){
 func main() {
   gconfig = new(common.Config)
   if err := gconfig.Parse("../onlineta.conf"); err != nil {
-    log.Fatal(err)
+    log.Print(err)
     return
   }
   log.Print(gconfig.Default.Basedir)
@@ -199,9 +240,10 @@ func main() {
 
   router := mux.NewRouter()
   router.HandleFunc("/", show_index).Methods("GET")
+  router.HandleFunc("/submit/{course}/{assignment}/{user:[a-z]{3}[0-9]{3}}", named_submit_handler).Methods("GET")
   router.HandleFunc("/submit/{course}/{assignment}", anonymous_submit_handler).Methods("GET");
+  router.HandleFunc("/submit/{course}/{assignment}/{user:[a-z]{3}[0-9]{3}}", receive_submission).Methods("POST", "PUT")
   router.HandleFunc("/submit/{course}/{assignment}", receive_submission).Methods("POST", "PUT");
-  router.HandleFunc("/submit/{course}/{assignment}/{user}", named_submit_handler).Methods("POST", "PUT")
   // TODO: Check that ID is a valid UUID
   router.HandleFunc("/query/{id}", query_handler).Methods("GET")
   router.HandleFunc("/assessment/{id}", query_handler).Methods("GET")
