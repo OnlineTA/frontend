@@ -19,7 +19,7 @@ var request_ch chan string
 var subscribe_ch chan subscription
 var delete_ch chan string
 var result_ch chan error
-var incoming_ch essment
+var incoming_ch chan Assessment
 
 type Receiver int
 

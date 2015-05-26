@@ -121,13 +121,14 @@ func receive_submission(w http.ResponseWriter, r *http.Request) {
 func query_handler(w http.ResponseWriter, r *http.Request) {
   vars := mux.Vars(r)
 
-  meta := common.Metadata{}
-  if err := meta.Get(vars["id"]); err != nil {
+  meta, err := common.Get(vars["id"])
+  if err != nil {
     fail500(w, err)
     log.Fatal(err)
     return
   }
 
+  log.Print(int(meta.Status))
   data := struct {
     Id string
     Status string
@@ -138,14 +139,14 @@ func query_handler(w http.ResponseWriter, r *http.Request) {
     "",
   }
 
-  templates.ExecuteTemplate(w, "success.html", data)
+  templates.ExecuteTemplate(w, "query.html", data)
 }
 
 func assessment_handler(w http.ResponseWriter, r* http.Request) {
   vars := mux.Vars(r)
 
-  meta := common.Metadata{}
-  if err := meta.Get(vars["id"]); err != nil {
+  meta, err := common.Get(vars["id"])
+  if err != nil {
     fail500(w, err)
     log.Fatal(err)
     return
@@ -178,6 +179,9 @@ func init_env(){
   if err := os.Mkdir(gconfig.Default.SubmissionDir, 0700); !os.IsExist(err) && err != nil {
     panic("Failed to create directory")
   }
+  if err := os.Mkdir(gconfig.Default.IncomingDir, 0700); !os.IsExist(err) && err != nil {
+    panic("Failed to create directory")
+  }
 }
 
 func main() {
@@ -198,6 +202,7 @@ func main() {
   router.HandleFunc("/submit/{course}/{assignment}", anonymous_submit_handler).Methods("GET");
   router.HandleFunc("/submit/{course}/{assignment}", receive_submission).Methods("POST", "PUT");
   router.HandleFunc("/submit/{course}/{assignment}/{user}", named_submit_handler).Methods("POST", "PUT")
+  // TODO: Check that ID is a valid UUID
   router.HandleFunc("/query/{id}", query_handler).Methods("GET")
   router.HandleFunc("/assessment/{id}", query_handler).Methods("GET")
 
